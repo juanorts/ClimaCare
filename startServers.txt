@@ -1,0 +1,5 @@
+-- 	Arrancar el server de InfluxDB
+influxd
+
+-- 	Arrancar el server de Grafana
+sudo systemctl start grafana-server
