@@ -1,7 +1,0 @@
-Sensors:
-- Temperature: OK
-- Humidity: OK
-- Wind speed: OK
-- Pollen concentration: OK
-- UV: OK
-- Air Quality: NO
