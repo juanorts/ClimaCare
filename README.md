@@ -1,6 +1,6 @@
 # ClimaCare
 
-ClimaCare is a project that aims to improve the way people interact with diverse climate indicators in Bilbao. For that, the solution will implement several IoT systems over the city to obtain and preprocess data that will be used for creating useful, user-oriented climate recommendations. This GitHub repository contains the Python code we have used to develop the solution. It contains code oriented to extract data from the sensors and additional open data sources, as well as training data for preprocessing and creating the recommendations.
+ClimaCare is a project that aims to improve the way people interact with diverse climate indicators in Bilbao. For that, the solution will implement several IoT systems over the city to obtain and preprocess data that will be used for creating useful, user-oriented climate recommendations using Machine Learning algorithms. This GitHub repository contains the Python code we have used to develop the solution. It contains code oriented to extract data from the sensors and additional open data sources, as well as training data for preprocessing and creating the recommendations.
 
 ## Prerequisites 📋
 
