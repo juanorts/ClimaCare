@@ -51,7 +51,7 @@ def getWindSpeedUVIndex():
     
     return wind_speed, uv
 
-# External data (REST API: Weatherstack): Pollen concentration (alder, birch, grass, mugwort, olive, ragweed)
+# External data (REST API: Open Meteo): Pollen concentration (alder, birch, grass, mugwort, olive, ragweed)
 def getPollenConcentrations():
     response = requests.get('https://air-quality-api.open-meteo.com/v1/air-quality?latitude=43.270097&longitude=-2.938766&current=alder_pollen,birch_pollen,grass_pollen,mugwort_pollen,olive_pollen,ragweed_pollen&domains=cams_europe').json()
 
@@ -200,25 +200,18 @@ class Sensor:
         
         return aqi
 
-   def get_aqi_and_pm_values(self):
+   def get_pm_values(self):
 
           # Get the gpio, ratio, and concentration in particles / 0.01 ft3
           g, r, c = self.read()
 
           if c == 1114000.62:
-              print("Error\n")
               return 0.0
 
           # Convert to SI units
           concentration_ugm3 = self.pcs_to_ugm3(c)
 
-          # Convert SI units to US AQI
-          # Input should be a 24-hour average of ugm3, not an instantaneous reading
-          aqi = self.ugm3_to_aqi(concentration_ugm3)
-
-          self.pi.stop()  # Disconnect from Pi.
-
-          return aqi
+          return concentration_ugm3
 
 # Pressure
 def read_pressure():
@@ -235,12 +228,13 @@ def read_pressure():
         print(f"Error: Unable to read pressure. Exit code: {result.returncode}")
         return None
 
+
 # Main
 
 if __name__ == "__main__":
     # Connect to InfluxDB
 
-    INFLUXDB_TOKEN=os.getenv('INFLUX_TOKEN')
+    INFLUXDB_TOKEN=os.getenv('INFLUX_TOKEN') # We configured a environment variable for the token
     token = INFLUXDB_TOKEN
     org = "ClimaCare"
     url = "http://localhost:8086"
@@ -250,26 +244,35 @@ if __name__ == "__main__":
     bucket="climacare-db"
 
     write_api = client.write_api(write_options=SYNCHRONOUS)
-        
+    
+    # Initialize Dust Sensor
+    pi = pigpio.pi()  # Connect to Pi
+    dustsensor = Sensor(pi, 24)  # Set the GPIO pin number 24 
+    
+    firstTime = True # Boolean used to know if it is the first iteration in the program
+    secondExec = False # Boolean used to know if it is the second iteration of the program
+    
     ''' For each parameter we will obtain the value every minute and calculate the average value every 30 minutes '''
     while True:
         
         countMin = 0 # Counter of minutes
         sumTemp = 0
         sumHumidity = 0
-        sumWindSpeed = 0
-        sumUV = 0
-        sumAlderPollen = 0
-        sumBirchPollen = 0
-        sumGrassPollen = 0
-        sumMugwortPollen = 0
-        sumOlivePollen = 0
-        sumRagweedPollen = 0
         sumAQI = 0
         sumPressure = 0
         
         # Execute for 30 minutes
         while countMin < 30:
+            
+            if(firstTime and secondExec): # If it's the second (first) iteration of the program
+                # Get the already calculated data from first iteration
+                sumTemp = tTemp
+                sumHumidity = tHum
+                sumAQI = tAQI
+                sumPressure = tPre
+                countMin = 1  # It should actually be the 2 minute
+                firstTime = False
+                secondExec = False
             
             print(f"\nMINUTE: {countMin}")
             
@@ -279,35 +282,26 @@ if __name__ == "__main__":
             while temp == 0 and humidity == 0:
                 temp, humidity = getTemperatureHumidity()
             sumTemp += temp
-            sumHumidity += humidity   
-            
-            # Wind speed and UV Index
-            windsp, uv =  getWindSpeedUVIndex()
-            sumWindSpeed += windsp
-            sumUV += uv
-                       
-            # Pollen concentrations
-            alder_pollen, birch_pollen, grass_pollen, mugwort_pollen, olive_pollen, ragweed_pollen = getPollenConcentrations()
-            sumAlderPollen += alder_pollen
-            sumBirchPollen += birch_pollen
-            sumGrassPollen += grass_pollen
-            sumMugwortPollen += mugwort_pollen
-            sumOlivePollen += olive_pollen
-            sumRagweedPollen += ragweed_pollen
+            sumHumidity += humidity
 
             # Pressure
             pressure_value = read_pressure()
             sumPressure += pressure_value
             
             # Air quality
-            pi = pigpio.pi()  # Connect to Pi
-            dustsensor = Sensor(pi, 24)  # Set the GPIO pin number 24
             time.sleep(30) # Wait for 30 seconds for the sensor to calibrate
-            aqi = dustsensor.get_aqi_and_pm_values()
+            aqi = dustsensor.get_pm_values()
             sumAQI += float(aqi)
             
             countMin += 1 # Increment the minute count
             time.sleep(30) # Wait for the resting 30 seconds in a minute
+            
+            # Air quality x2 (it has to be collected in 30 second intervals because of the sensor)
+            aqi = dustsensor.get_pm_values() # After another 30 second interval get the PM2.5 data again
+            sumAQI += float(aqi)
+            
+            if(firstTime): # If it's the first iteration exit the loop to write data at the beginning
+                break
         
         '''
 
@@ -315,36 +309,41 @@ if __name__ == "__main__":
         using a Decision Tree Classifier. Then, write the data into InfluxDB.
 
         '''
-        if (countMin == 30):
+        
+        if ((firstTime) or (countMin == 30)): # Also allow to process and send data at the beginning
+               
+            if(firstTime):
+               tTemp = sumTemp
+               tHum = sumHumidity
+               tAQI = sumAQI
+               tPre = sumPressure
+               secondExec = True  # As it is the first iteration, set the next one as second (first) iteration
+            
             # Temperature
-            resultTemp = sumTemp / 30
+            resultTemp = sumTemp / countMin
             
             # Humidity
-            resultHumidity = sumHumidity / 30
+            resultHumidity = sumHumidity / countMin
             
-            # Wind Speed
-            resultWS = sumWindSpeed / 30
+            # Wind Speed and UV (API)
+            resultWS, resultUV = getWindSpeedUVIndex()
             
-            # UV
-            resultUV = sumUV / 30
+            # Pollen concentrations (API)
+            resultAP, resultBP, resultGP, resultMP, resultOP, resultRP = getPollenConcentrations()
             
-            # Pollen concentrations
-            resultAP = sumAlderPollen / 30
-            resultBP = sumBirchPollen / 30
-            resultGP = sumGrassPollen / 30
-            resultMP = sumMugwortPollen / 30
-            resultOP = sumOlivePollen / 30
-            resultRP = sumRagweedPollen / 30
-            
-            # Air quality           
-            resultAQI = sumAQI / 30
+            # Air quality: convert to AQI
+            if(countMin == 30):
+                resultAQI = dustsensor.ugm3_to_aqi((sumAQI / 60)) # Dust sensor values are measured twice the times (30 sec intervals)
+            else:
+                resultAQI = 0.0
                 
             # Pressure
-            resultPressure = sumPressure / 30
+            resultPressure = sumPressure / countMin
             
             '''
             
-            Decision Tree Classification
+            Decision Tree Classification (Machine Learning algorithm that classifies weather conditions
+            into day profiles)
             
             '''
             
@@ -352,7 +351,7 @@ if __name__ == "__main__":
             
             # Read the training dataset
 
-            df = pd.read_csv("data/BilbaoWeatherDataset.csv", sep = ";")
+            df = pd.read_csv("/home/pi/ClimaCare/data/BilbaoWeatherDataset.csv", sep = ";")
 
             # Data processing
 
@@ -449,7 +448,7 @@ if __name__ == "__main__":
                 recommendationStr = recommendationStr + ["Si se experimentan síntomas como irritación ocular, irritación de garganta, dificultad para respirar o problemas respiratorios, considerar reducir las actividades al aire libre", "El uso de mascarillas protectoras puede ser considerado, especialmente para aquellos sensibles a la calidad del aire"]
 
             '''
-            
+
             Add pollen alerts
 
             '''
@@ -460,7 +459,28 @@ if __name__ == "__main__":
             if((resultAP > 80) or (resultBP > 80) or (resultGP > 50) or (resultMP > 30) or (resultOP > 200) or (resultRP > 50)):
                 pollenLevel = "Alto"
             if(pollenLevel == ""):
-                pollenLevel = "Bajo"          
+                pollenLevel = "Bajo"
+                
+            '''
+
+            Make AQI categorical
+
+            '''
+            
+            categoryAQI = ""
+            
+            if(int(resultAQI) >= 0 and int(resultAQI) <= 50):
+                categoryAQI = "Buena"
+            elif(int(resultAQI) >= 51 and int(resultAQI) <= 100):
+                categoryAQI = "Moderada"
+            elif(int(resultAQI) >= 101 and int(resultAQI) <= 200):
+                categoryAQI = "Insalubre"
+            elif(int(resultAQI) >= 201 and int(resultAQI) <= 300):
+                categoryAQI = "Muy insalubre"
+            elif(int(resultAQI) >= 401 and int(resultAQI) <= 500):
+                categoryAQI = "Peligroso"
+            else:
+                categoryAQI = "Emergencia"
             
             '''
             
@@ -469,10 +489,14 @@ if __name__ == "__main__":
             '''
             
             # Write data into InfluxDB bucket
-            influxdata = influxdb_client.Point("measure").tag("location", "Universidad de Deusto").field("temperture", result_df['TEMPERATURE'].values[0]).field("humidity", result_df['HUMIDITY'].values[0]).field("windspeed", result_df['WINDSPEED'].values[0]).field("pressure", result_df['PRESSURE'].values[0]).field("uv", result_df['UV INDEX'].values[0]).field("air_quality", result_df['AIR QUALITY'].values[0]).field("pollen", pollenLevel)
+            if(countMin == 30):
+                influxdata = influxdb_client.Point("measure").tag("location", "Universidad de Deusto").field("temperture", result_df['TEMPERATURE'].values[0]).field("humidity", result_df['HUMIDITY'].values[0]).field("windspeed", float(result_df['WINDSPEED'].values[0])).field("pressure", result_df['PRESSURE'].values[0]).field("uv", float(result_df['UV INDEX'].values[0])).field("air_quality", float(sumAQI/60)).field("air_quality_index", categoryAQI).field("pollen", pollenLevel)
+            else: # If it's the first iteration of the whole program AQI should be 0
+                influxdata = influxdb_client.Point("measure").tag("location", "Universidad de Deusto").field("temperture", result_df['TEMPERATURE'].values[0]).field("humidity", result_df['HUMIDITY'].values[0]).field("windspeed", float(result_df['WINDSPEED'].values[0])).field("pressure", result_df['PRESSURE'].values[0]).field("uv", float(result_df['UV INDEX'].values[0])).field("air_quality", -1.0).field("air_quality_index", "En 30 mins").field("pollen", pollenLevel)
             write_api.write(bucket=bucket, org=org, record=influxdata)
             for r in recommendationStr:
                 influxdata = influxdb_client.Point("measure").tag("location", "Universidad de Deusto").field("recommendations", r)
                 write_api.write(bucket=bucket, org=org, record=influxdata)
                 
             print("Data written succesfully")
+            
